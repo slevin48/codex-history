@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Codex Session History</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Fira Code", "Source Code Pro", Menlo, Monaco, Consolas, "Courier New", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at top left, #1c2a35, #050608 60%);
+      color: #d1f5ff;
+    }
+
+    .terminal-shell {
+      width: min(960px, 92vw);
+      max-height: min(760px, 92vh);
+      background: rgba(5, 12, 20, 0.96);
+      border: 1px solid rgba(63, 155, 230, 0.35);
+      border-radius: 12px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .terminal-header {
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: linear-gradient(90deg, rgba(20, 39, 57, 0.95), rgba(10, 25, 43, 0.95));
+      border-bottom: 1px solid rgba(63, 155, 230, 0.25);
+    }
+
+    .terminal-header .traffic-light {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      opacity: 0.6;
+    }
+
+    .traffic-light.red {
+      background: #ff5f56;
+    }
+
+    .traffic-light.amber {
+      background: #ffbd2e;
+    }
+
+    .traffic-light.green {
+      background: #27c93f;
+    }
+
+    .terminal-title {
+      font-size: 0.85rem;
+      color: rgba(219, 241, 255, 0.7);
+    }
+
+    .terminal-body {
+      flex: 1;
+      padding: 1rem;
+      overflow-y: auto;
+      font-size: 0.95rem;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(63, 155, 230, 0.4) transparent;
+    }
+
+    .terminal-body::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .terminal-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .terminal-body::-webkit-scrollbar-thumb {
+      background-color: rgba(63, 155, 230, 0.45);
+      border-radius: 4px;
+    }
+
+    .line {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      margin-bottom: 0.2rem;
+    }
+
+    .prompt {
+      color: #6fe3ff;
+      flex: 0 0 auto;
+      min-width: 7.5ch;
+    }
+
+    .line.command .prompt {
+      color: #7cffd4;
+    }
+
+    .line.command .text {
+      color: #d4fff2;
+    }
+
+    .line.user .prompt {
+      color: #82f7ff;
+    }
+
+    .line.user .text {
+      color: #f1f9ff;
+    }
+
+    .line.assistant .prompt {
+      color: #ffd280;
+    }
+
+    .line.tool .prompt {
+      color: #9cb3ff;
+    }
+
+    .line.system .prompt {
+      color: #f58bff;
+    }
+
+    .line.error .text {
+      color: #ff8c99;
+    }
+
+    .line.meta .text {
+      color: rgba(209, 245, 255, 0.75);
+      font-style: italic;
+    }
+
+    .line .text {
+      flex: 1;
+      word-break: break-word;
+    }
+
+    .session-button {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      color: #9dcaff;
+      cursor: pointer;
+      text-decoration: underline;
+      text-decoration-thickness: 0.08em;
+      text-decoration-color: rgba(157, 202, 255, 0.6);
+    }
+
+    .session-button:hover,
+    .session-button:focus {
+      color: #c9e4ff;
+      text-decoration-color: #c9e4ff;
+    }
+
+    .session-button:focus-visible {
+      outline: 2px dashed rgba(157, 202, 255, 0.65);
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 600px) {
+      .prompt {
+        min-width: 6ch;
+      }
+
+      .terminal-shell {
+        width: 96vw;
+        max-height: 92vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="terminal-shell" aria-live="polite">
+    <div class="terminal-header">
+      <span class="traffic-light red" aria-hidden="true"></span>
+      <span class="traffic-light amber" aria-hidden="true"></span>
+      <span class="traffic-light green" aria-hidden="true"></span>
+      <span class="terminal-title">codex-history — session viewer</span>
+    </div>
+    <div class="terminal-body" id="terminal-output" role="log"></div>
+  </main>
+
+  <template id="line-template">
+    <div class="line">
+      <span class="prompt"></span>
+      <span class="text"></span>
+    </div>
+  </template>
+
+  <script>
+    const outputEl = document.getElementById('terminal-output');
+    const lineTemplate = document.getElementById('line-template');
+    const repoPrompt = 'codex-history$';
+    let manifest = [];
+
+    function normaliseText(value) {
+      if (typeof value !== 'string') {
+        return '';
+      }
+      return value.replace(/\r\n/g, '\n');
+    }
+
+    function appendLine(text, { prompt = '', className = '', asHtml = false } = {}) {
+      const clone = lineTemplate.content.firstElementChild.cloneNode(true);
+      if (className) {
+        clone.classList.add(className);
+      }
+      const promptSpan = clone.querySelector('.prompt');
+      const textSpan = clone.querySelector('.text');
+      promptSpan.textContent = prompt;
+      if (asHtml) {
+        textSpan.innerHTML = text;
+      } else {
+        textSpan.textContent = text;
+      }
+      outputEl.appendChild(clone);
+      outputEl.scrollTop = outputEl.scrollHeight;
+    }
+
+    function appendCommand(command) {
+      appendLine(command, { prompt: repoPrompt, className: 'command' });
+    }
+
+    function appendMeta(text) {
+      appendLine(text, { prompt: '', className: 'meta' });
+    }
+
+    function appendError(text) {
+      appendLine(text, { prompt: 'error', className: 'error' });
+    }
+
+    function appendInteractiveSession(filename) {
+      const clone = lineTemplate.content.firstElementChild.cloneNode(true);
+      clone.classList.add('meta');
+      clone.querySelector('.prompt').textContent = '';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'session-button';
+      button.textContent = filename;
+      button.addEventListener('click', () => loadSession(filename));
+      const textSpan = clone.querySelector('.text');
+      textSpan.textContent = '';
+      textSpan.append('open ');
+      textSpan.appendChild(button);
+      outputEl.appendChild(clone);
+      outputEl.scrollTop = outputEl.scrollHeight;
+    }
+
+    function appendUser(text) {
+      appendLine(text, { prompt: 'user>', className: 'user' });
+    }
+
+    function appendAssistant(text) {
+      appendLine(text, { prompt: 'assistant>', className: 'assistant' });
+    }
+
+    function appendTool(text, promptLabel = 'tool>') {
+      appendLine(text, { prompt: promptLabel, className: 'tool' });
+    }
+
+    function appendSystem(text) {
+      appendLine(text, { prompt: 'system>', className: 'system' });
+    }
+
+    function formatContent(items = []) {
+      return items
+        .map((entry) => {
+          if (entry == null || typeof entry !== 'object') {
+            return '';
+          }
+          if ('text' in entry && typeof entry.text === 'string') {
+            return normaliseText(entry.text);
+          }
+          if ('image_url' in entry) {
+            return `[image: ${entry.image_url}]`;
+          }
+          if ('tool_use' in entry) {
+            return `[tool: ${JSON.stringify(entry.tool_use)}]`;
+          }
+          return JSON.stringify(entry);
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+
+    function prettyPrintJsonString(raw) {
+      if (typeof raw !== 'string') {
+        return '';
+      }
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        return '';
+      }
+      try {
+        const parsed = JSON.parse(trimmed);
+        return JSON.stringify(parsed, null, 2);
+      } catch (error) {
+        return raw;
+      }
+    }
+
+    async function loadManifest() {
+      appendCommand('ls sessions');
+      try {
+        const response = await fetch('sessions/index.json', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        manifest = Array.isArray(data)
+          ? data.map((value) => ({ file: value }))
+          : (data.sessions || []);
+
+        if (!manifest.length) {
+          appendMeta('(no session files found)');
+          return;
+        }
+
+        manifest.forEach((entry) => {
+          const file = entry.file || entry.filename || entry.name;
+          appendLine(file, { prompt: '', className: 'meta' });
+        });
+
+        appendMeta('\nclick a command below to inspect a session:');
+        manifest.forEach((entry) => {
+          const file = entry.file || entry.filename || entry.name;
+          if (file) {
+            appendInteractiveSession(file);
+          }
+        });
+
+        const first = manifest[0];
+        if (first) {
+          const file = first.file || first.filename || first.name;
+          if (file) {
+            appendMeta('\nopening latest session…');
+            loadSession(file);
+          }
+        }
+      } catch (error) {
+        appendError(`unable to read sessions directory: ${error.message}`);
+      }
+    }
+
+    function renderReasoning(item) {
+      const duration = typeof item.duration_ms === 'number' ? `${(item.duration_ms / 1000).toFixed(2)}s` : 'unknown';
+      const summary = Array.isArray(item.summary) && item.summary.length
+        ? item.summary.join('\n')
+        : '[thinking…]';
+      appendSystem(`${summary} (${duration})`);
+    }
+
+    function renderFunctionCall(item) {
+      const callName = item.name ? `tool[${item.name}]` : 'tool';
+      const details = [];
+      if (item.id) {
+        details.push(`id=${item.id}`);
+      }
+      if (item.call_id) {
+        details.push(`call=${item.call_id}`);
+      }
+      if (item.status) {
+        details.push(`status=${item.status}`);
+      }
+      const header = details.length ? `${callName} (${details.join(', ')})` : callName;
+      const display = item.arguments ? prettyPrintJsonString(item.arguments) : '';
+      appendTool(display ? `${header}\n${display}` : header, `${callName}>`);
+    }
+
+    function renderFunctionOutput(item) {
+      const promptLabel = item.call_id ? `output[${item.call_id}]>` : 'output>';
+      const printable = prettyPrintJsonString(item.output);
+      appendTool(printable || '[no output]', promptLabel);
+    }
+
+    function renderMessage(item) {
+      const text = formatContent(item.content);
+      if (item.role === 'user') {
+        appendUser(text);
+      } else if (item.role === 'assistant') {
+        appendAssistant(text);
+      } else if (item.role === 'system') {
+        appendSystem(text);
+      } else {
+        appendLine(text, { prompt: item.role ? `${item.role}>` : '', className: 'meta' });
+      }
+    }
+
+    async function loadSession(filename) {
+      if (!filename) {
+        return;
+      }
+      appendCommand(`open ${filename}`);
+      try {
+        const response = await fetch(`sessions/${filename}`, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`);
+        }
+        const session = await response.json();
+        const meta = session.session || {};
+        const timestamp = meta.timestamp ? new Date(meta.timestamp).toLocaleString() : 'unknown time';
+        const instructions = meta.instructions && meta.instructions.trim() ? meta.instructions.trim() : '—';
+        appendMeta(`session id: ${meta.id || 'unknown'}`);
+        appendMeta(`started at: ${timestamp}`);
+        appendMeta(`instructions: ${instructions}`);
+        appendMeta('---');
+
+        const items = Array.isArray(session.items) ? session.items : [];
+        items.forEach((item) => {
+          if (!item || typeof item !== 'object') {
+            return;
+          }
+          switch (item.type) {
+            case 'message':
+              renderMessage(item);
+              break;
+            case 'reasoning':
+              renderReasoning(item);
+              break;
+            case 'function_call':
+              renderFunctionCall(item);
+              break;
+            case 'function_call_output':
+              renderFunctionOutput(item);
+              break;
+            default:
+              appendSystem(`${item.type || 'event'}: ${JSON.stringify(item)}`);
+          }
+        });
+
+        appendMeta('--- end of session ---\n');
+      } catch (error) {
+        appendError(`failed to open session: ${error.message}`);
+      }
+    }
+
+    loadManifest();
+  </script>
+</body>
+</html>
